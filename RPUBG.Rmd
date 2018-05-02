@@ -1,0 +1,122 @@
+---
+title: "PUBG STAT QUERY"
+author: "june"
+---
+###功能说明
+R版本的PUBG数据查询，可以实现：
+-个人战绩查询
+-比赛（已结束）赛况查询
+-比赛中遥测数据查询
+
+### R包
+首先说明的是数据查询的过程是调用PUBG DEVELOPER API，然后通过特定的链接向PUBG发出数据请求，然后PUBG则会返回json格式的数据，所以实质上是一个爬虫。我们用到的包有：
+```{r,echo = TRUE,eval=FALSE}
+library(rjson)
+library(RJSONIO)
+library(RCurl)
+library(XML)
+```
+
+###请求头
+这个请求头我是用了python的请求头，因为PUBG只提供了python的请求头，而R在实现利用请求头获取数据的方式和python很像，所以可以直接用python的请求头。
+```{r}
+myHttpheader <- c(
+"Authorization"="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJlNWM3ZTI3MC0xYTA4LTAxMzYtYzU5NC0yZmZkMzhmZDU3ZmYiLCJpc3MiOiJnYW1lbG9ja2VyIiwiaWF0IjoxNTIyODI3NDI1LCJwdWIiOiJibHVlaG9sZSIsInRpdGxlIjoicHViZyIsImFwcCI6InN0YXRjb2FjaCIsInNjb3BlIjoiY29tbXVuaXR5IiwibGltaXQiOjEwfQ.t2xB1pM0PFrhX0hA8ihQEV4X5swRPLO-HaKPLq7Xicg",
+"Accept"="application/vnd.api+json")#插入个人申请的API
+```
+
+###查询比赛
+PUBG并不是提供以玩家为索引的数据，而是提供以比赛为索引的，所以无论想要什么数据，都需要先有一场比赛的ID才能开始。
+```{r,echo = TRUE,eval=FALSE}
+bsq<-function(shard,name){
+Game_url <- paste("https://api.playbattlegrounds.com/shards/pc-",shard,"/players?filter[playerNames]=",nam,sep="")#shard是区号
+webpage<-getURL(Game_url,httpheader=myHttpheader)
+webpage
+Game<-fromJSON(webpage)
+Game_df<-data.frame()
+Game_df<-t(data.frame(Game[["data"]][[1]][["relationships"]][["matches"]][["data"]]))#获取比赛列表
+match_list<-Game_df[,2]
+match_list#比赛列表
+}
+```
+
+###查询个人的比赛战绩
+个人的比赛战绩收录在“比赛”的数据里面，我们可以根据名字提取出来，这就是市面上大部分PUBG战绩查询网站提供的功能。
+```{r,echo = TRUE,eval=FALSE}
+msq<-function(shard,name,index)
+bsq(shard,name)
+General_Stat <- paste("https://api.playbattlegrounds.com/shards/pc-",shard,"/matches/",match_list[index],sep="")
+webpage2<-getURL(General_Stat,httpheader=myHttpheader)
+webpage2
+gs<-fromJSON(webpage2)
+lst<-list()#接下来创建一个玩家列表
+a <- 1
+for (i in 1:length(gs[["included"]])){
+   if(gs[["included"]][[i]][["type"]]=="participant"){
+    lst[[a]]<-as.numeric(i)###不能用as.character()，否则会出现"script out of bound"，文本格式的数字不能够用来查询.json
+    a<-a+1} 
+}
+u_lst<-unlist(lst)
+gs_df<-data.frame()
+for (j in u_lst){
+  if (gs[["included"]][[j]][["type"]]=="participant" & gs[["included"]][[j]][["attributes"]][["stats"]][["name"]] == "17_shou"){
+    gs_df<-data.frame(gs[["included"]][[j]][["attributes"]][["stats"]])}
+}
+View(gs_df)
+}
+```
+
+###获取遥测数据链接
+遥测数据是这里面最有意思也是最值得研究的一部分，首先我们要获取到了链接
+```{r,echo = TRUE,eval=FALSE}
+aug<-function(shard,name,index){
+bsq(shard,name)
+asset_url <- paste("https://api.playbattlegrounds.com/shards/pc-",shard,"/matches/",match_list[index],sep="")
+webpage3<-getURL(asset_url,httpheader=myHttpheader)
+webpage3
+au<-fromJSON(webpage3)
+lst2<-list()
+b <- 1
+for (asset in 1:length(au[["included"]])){
+  if(au[["included"]][[asset]][["type"]]=="asset"){
+    lst2[[b]]<-as.numeric(asset)
+    b<-b+1} 
+}
+for (asset_num in lst2) {
+  tele_link<-au[["included"]][[asset_num]][["attributes"]][["URL"]]}
+tele_link
+}
+```
+
+###查询指定的遥测数据
+指定的遥测数据查询方法大同小异，本质上就是对json数据的查询。需要查询的字段可以在<https://github.com/pubg/api-assets>上找到。下面是查询全场“子弹拾起”事件
+##这一组的函数由于变化较多，没有进行封装，tele_link是上面aug()的结果
+```{r,echo = TRUE,eval=FALSE}
+tele_link=aug(shard,name,index)
+webpage4<-getURL(tele_link,httpheader=myHttpheader)
+webpage4
+tele_stat<-fromJSON(webpage4)
+lst3<-list()
+c <- 1
+for (l in 1:length(tele_stat)){
+  if(tele_stat[[l]][["_T"]] == "LogItemPickup"){
+    lst3[[c]]<-as.numeric(l)
+    c<-c+1} 
+}
+lst4<-list()###需要将符合上级（在这里是LogItemPickup）条件的序号生成新列表再接着下一级的查询，不然会出现“argument is of length zero”，简单点说就是数据维度不同找不到结果报错。
+d <- 1
+for (m in lst3) {
+  if(tele_stat[[m]][["item"]][["category"]]=="Ammunition")
+    lst4[[d]]<-tele_stat[[m]][["item"]][["itemId"]]
+    d<-d+1
+}
+result<-unlist(lst4)
+View(result)
+```
+
+###实例
+```{r}
+bsq("as","17_shou")
+msq("as","17_shou",1)#查询亚服的17_shou的最近一场比赛的链接
+aug("as","17_shou",1)#查询亚服的17_shou的最近一场比赛的遥测数据链接
+```
